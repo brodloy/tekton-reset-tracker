@@ -13,11 +13,6 @@
 
 ---
 
-Tekton is one of the worst rooms to roll in a CM speed-run, so a lot of teams just
-**leave and re-roll**. This plugin keeps the tally honest: every time you bail at
-Tekton without killing him, it adds a reset and the wall-clock time that raid cost
-you — all in a tidy side panel.
-
 ## ✨ Features
 
 | | |
