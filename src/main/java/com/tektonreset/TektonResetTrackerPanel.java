@@ -29,6 +29,7 @@ class TektonResetTrackerPanel extends PluginPanel
 {
 	private static final Dimension MIN_SIZE = new Dimension(PluginPanel.PANEL_WIDTH, 240);
 	private static final Color TEKTON_ORANGE = new Color(214, 122, 48);
+	private static final Color COMPLETE_GREEN = new Color(0, 200, 83);
 
 	private final TektonResetTrackerPlugin plugin;
 
@@ -147,20 +148,30 @@ class TektonResetTrackerPanel extends PluginPanel
 		sessionResets.setText(QuantityFormatter.formatNumber(plugin.getSessionResets()));
 		sessionWasted.setText(DurationFormat.format(plugin.getSessionWastedMillis()));
 
-		if (plugin.isInRaid() && plugin.isCurrentRaidChallengeMode())
+		if (!plugin.isInRaid())
 		{
-			currentStatus.setText("CM raid — " + DurationFormat.format(plugin.getCurrentRaidMillis()));
-			currentStatus.setForeground(TEKTON_ORANGE);
+			currentStatus.setText("Not in a raid");
+			currentStatus.setForeground(Color.LIGHT_GRAY);
 		}
-		else if (plugin.isInRaid())
+		else if (!plugin.isCurrentRaidChallengeMode())
 		{
 			currentStatus.setText("Normal raid (not tracked)");
 			currentStatus.setForeground(Color.LIGHT_GRAY);
 		}
+		else if (plugin.hasProgressedPastTekton())
+		{
+			currentStatus.setText("Moved past Tekton");
+			currentStatus.setForeground(COMPLETE_GREEN);
+		}
+		else if (plugin.isTektonCompleted())
+		{
+			currentStatus.setText("Completed Tekton - " + DurationFormat.format(plugin.getCurrentRaidMillis()));
+			currentStatus.setForeground(TEKTON_ORANGE);
+		}
 		else
 		{
-			currentStatus.setText("Not in a raid");
-			currentStatus.setForeground(Color.LIGHT_GRAY);
+			currentStatus.setText("CM raid - " + DurationFormat.format(plugin.getCurrentRaidMillis()));
+			currentStatus.setForeground(TEKTON_ORANGE);
 		}
 	}
 

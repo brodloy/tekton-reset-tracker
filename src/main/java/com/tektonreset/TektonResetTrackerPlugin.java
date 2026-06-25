@@ -11,6 +11,8 @@ import net.runelite.api.ChatMessageType;
 import net.runelite.api.Client;
 import net.runelite.api.GameState;
 import net.runelite.api.NPC;
+import net.runelite.api.Player;
+import net.runelite.api.coords.WorldPoint;
 import net.runelite.api.events.GameStateChanged;
 import net.runelite.api.events.GameTick;
 import net.runelite.api.events.NpcDespawned;
@@ -30,7 +32,7 @@ import net.runelite.client.util.ImageUtil;
 @Slf4j
 @PluginDescriptor(
 	name = "Tekton Reset Tracker",
-	description = "Counts how many Chambers of Xeric Challenge Mode raids you reset at Tekton without killing it, and the time wasted.",
+	description = "Counts how many Chambers of Xeric Challenge Mode raids you reset at Tekton, and the time wasted.",
 	tags = {"tekton", "cox", "cm", "challenge", "chambers", "xeric", "raid", "reset", "tracker", "counter", "skip"}
 )
 public class TektonResetTrackerPlugin extends Plugin
@@ -45,6 +47,12 @@ public class TektonResetTrackerPlugin extends Plugin
 		NpcID.RAIDS_TEKTON_FIGHTING_ENRAGED,   // 7544
 		NpcID.RAIDS_TEKTON_HAMMERING           // 7545 (repairing his armour at the anvil)
 	);
+
+	// How far (tiles) the player must get from where Tekton died before we treat it as having
+	// moved on to the next room. Looting happens within a few tiles of the corpse; the next room
+	// (combat or puzzle, e.g. the crabs room) is a full chunk-plus away, so anything past this is
+	// "progressed past Tekton" and must never count as a reset. Heuristic - tune if needed.
+	private static final int PROGRESS_DISTANCE = 24;
 
 	@Inject
 	private Client client;
@@ -68,9 +76,11 @@ public class TektonResetTrackerPlugin extends Plugin
 
 	// Per-raid state.
 	private boolean inRaid;
-	private boolean challengeMode; // whether the current raid is Challenge Mode (only CM raids are counted)
-	private boolean sawTekton;
-	private boolean tektonDefeated;
+	private boolean challengeMode;        // whether the current raid is Challenge Mode (only CM raids are counted)
+	private boolean sawTekton;            // whether we reached the Tekton room this raid
+	private boolean tektonCompleted;      // whether Tekton has been killed this raid (orange "Completed Tekton", timer keeps running)
+	private boolean progressedPastTekton; // whether the player moved on to the next room (green, never counts as a reset)
+	private WorldPoint tektonDeathLoc;    // where Tekton died, anchor for the "moved on" check
 	private long raidStartMillis;
 
 	@Provides
@@ -87,11 +97,7 @@ public class TektonResetTrackerPlugin extends Plugin
 		sessionResets = 0;
 		sessionWastedMillis = 0L;
 
-		inRaid = false;
-		challengeMode = false;
-		sawTekton = false;
-		tektonDefeated = false;
-		raidStartMillis = 0L;
+		resetRaidState();
 
 		panel = new TektonResetTrackerPanel(this);
 
@@ -147,6 +153,20 @@ public class TektonResetTrackerPlugin extends Plugin
 		{
 			challengeMode = true;
 		}
+
+		// Once Tekton is dead, watch whether the player walks off to the next room. If they do,
+		// they committed to the raid (next room / completion) and this can never be a reset.
+		if (inRaid && tektonCompleted && !progressedPastTekton && tektonDeathLoc != null)
+		{
+			final Player local = client.getLocalPlayer();
+			final WorldPoint here = local == null ? null : local.getWorldLocation();
+			if (here != null && here.getPlane() == tektonDeathLoc.getPlane()
+				&& here.distanceTo(tektonDeathLoc) > PROGRESS_DISTANCE)
+			{
+				progressedPastTekton = true;
+				refreshPanel();
+			}
+		}
 	}
 
 	@Subscribe
@@ -162,27 +182,42 @@ public class TektonResetTrackerPlugin extends Plugin
 	public void onNpcDespawned(NpcDespawned event)
 	{
 		final NPC npc = event.getNpc();
-		// A Tekton that despawns while dead was actually killed — that's progress, not a reset.
-		// Walking out of the room (or his standard -> enraged swap) despawns him without isDead().
-		if (inRaid && npc.isDead() && TEKTON_NPC_IDS.contains(npc.getId()))
+		// A Tekton that despawns while dead was killed: mark "Completed Tekton" (the timer keeps
+		// running - you can still re-roll). Record where he died as the anchor for the moved-on
+		// check. Walking out of the room (or his standard -> enraged swap) despawns him without isDead().
+		if (inRaid && !tektonCompleted && npc.isDead() && TEKTON_NPC_IDS.contains(npc.getId()))
 		{
-			tektonDefeated = true;
+			tektonCompleted = true;
+			tektonDeathLoc = npc.getWorldLocation();
+			refreshPanel();
 		}
 	}
 
 	@Subscribe
 	public void onGameStateChanged(GameStateChanged event)
 	{
-		// On logout / world hop / lost connection we stop tracking the current raid WITHOUT
-		// recording a reset: the raid persists server-side and the player hasn't left Tekton.
-		// If they were still in the raid, the next logged-in game tick re-detects IN_RAID.
 		final GameState state = event.getGameState();
-		if (state == GameState.LOGIN_SCREEN || state == GameState.HOPPING || state == GameState.CONNECTION_LOST)
+
+		// A deliberate logout at Tekton is treated as a reset: bank the wasted time before clearing,
+		// so bailing by logging out still counts.
+		if (state == GameState.LOGIN_SCREEN)
 		{
-			inRaid = false;
-			challengeMode = false;
-			sawTekton = false;
-			tektonDefeated = false;
+			final boolean reset = isCountableReset();
+			final long elapsed = currentRaidMillis();
+			resetRaidState();
+			if (reset)
+			{
+				recordReset(elapsed);
+			}
+			return;
+		}
+
+		// A world hop or dropped connection is not a deliberate bail - the raid persists and the
+		// player may reconnect - so we stop tracking WITHOUT counting. The next logged-in game tick
+		// re-detects IN_RAID and resumes.
+		if (state == GameState.HOPPING || state == GameState.CONNECTION_LOST)
+		{
+			resetRaidState();
 		}
 	}
 
@@ -212,29 +247,50 @@ public class TektonResetTrackerPlugin extends Plugin
 
 	private void startRaid()
 	{
+		resetRaidState();
 		inRaid = true;
+		raidStartMillis = System.currentTimeMillis();
+	}
+
+	/** Clear all per-raid tracking. */
+	private void resetRaidState()
+	{
+		inRaid = false;
 		challengeMode = false;
 		sawTekton = false;
-		tektonDefeated = false;
-		raidStartMillis = System.currentTimeMillis();
+		tektonCompleted = false;
+		progressedPastTekton = false;
+		tektonDeathLoc = null;
+		raidStartMillis = 0L;
 	}
 
 	private void endRaid()
 	{
-		// Only Challenge Mode raids are counted; Normal raids are ignored entirely.
-		final boolean reset = challengeMode && sawTekton && !tektonDefeated;
-		final long elapsed = Math.max(0L, System.currentTimeMillis() - raidStartMillis);
+		// Count a reset when we reached Tekton in a Challenge Mode raid and left WITHOUT moving on
+		// to the next room. That covers both leaving without a kill and the common case of killing
+		// Tekton, seeing a slow time, and re-rolling. If the player progressed past Tekton (next
+		// room or a completed raid) it is never a reset. Normal raids are ignored entirely.
+		final boolean reset = isCountableReset();
+		// Time wasted is the whole raid up to the moment you leave.
+		final long elapsed = currentRaidMillis();
 
-		inRaid = false;
-		challengeMode = false;
-		sawTekton = false;
-		tektonDefeated = false;
+		resetRaidState();
 
-		if (!reset)
+		if (reset)
 		{
-			return;
+			recordReset(elapsed);
 		}
+	}
 
+	/** A reset only counts in a CM raid where we reached Tekton and did not move on past him. */
+	private boolean isCountableReset()
+	{
+		return challengeMode && sawTekton && !progressedPastTekton;
+	}
+
+	/** Add one reset and its wasted time to the lifetime + session totals, persist, and announce it. */
+	private void recordReset(long elapsed)
+	{
 		lifetimeResets++;
 		lifetimeWastedMillis += elapsed;
 		sessionResets++;
@@ -243,9 +299,10 @@ public class TektonResetTrackerPlugin extends Plugin
 		config.lifetimeResets(lifetimeResets);
 		config.lifetimeWastedMillis(lifetimeWastedMillis);
 
-		if (config.chatMessage())
+		// Only chat while logged in - a reset banked on logout has no chatbox to print to.
+		if (config.chatMessage() && client.getGameState() == GameState.LOGGED_IN)
 		{
-			final String message = "Tekton CM reset #" + lifetimeResets + " — "
+			final String message = "Tekton CM reset #" + lifetimeResets + " - "
 				+ DurationFormat.format(elapsed) + " wasted (lifetime: "
 				+ DurationFormat.format(lifetimeWastedMillis) + ").";
 			client.addChatMessage(ChatMessageType.GAMEMESSAGE, "", message, null);
@@ -282,8 +339,13 @@ public class TektonResetTrackerPlugin extends Plugin
 		return inRaid;
 	}
 
-	/** Milliseconds elapsed in the current raid, or 0 when not in a raid. */
+	/** Milliseconds elapsed in the current raid (keeps running until you leave), or 0 when not raiding. */
 	long getCurrentRaidMillis()
+	{
+		return currentRaidMillis();
+	}
+
+	private long currentRaidMillis()
 	{
 		return inRaid ? Math.max(0L, System.currentTimeMillis() - raidStartMillis) : 0L;
 	}
@@ -292,6 +354,18 @@ public class TektonResetTrackerPlugin extends Plugin
 	boolean isCurrentRaidChallengeMode()
 	{
 		return challengeMode;
+	}
+
+	/** Whether Tekton has been killed this raid (orange "Completed Tekton"; the timer keeps running). */
+	boolean isTektonCompleted()
+	{
+		return tektonCompleted;
+	}
+
+	/** Whether the player moved on past Tekton this raid (green "Moved past Tekton"; never a reset). */
+	boolean hasProgressedPastTekton()
+	{
+		return progressedPastTekton;
 	}
 
 	/**
