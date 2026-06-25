@@ -209,6 +209,10 @@ public class TektonResetTrackerPlugin extends Plugin
 			{
 				recordReset(elapsed);
 			}
+			else
+			{
+				refreshPanel();
+			}
 			return;
 		}
 
@@ -218,6 +222,7 @@ public class TektonResetTrackerPlugin extends Plugin
 		if (state == GameState.HOPPING || state == GameState.CONNECTION_LOST)
 		{
 			resetRaidState();
+			refreshPanel();
 		}
 	}
 
@@ -278,7 +283,13 @@ public class TektonResetTrackerPlugin extends Plugin
 
 		if (reset)
 		{
-			recordReset(elapsed);
+			recordReset(elapsed); // also refreshes the panel
+		}
+		else
+		{
+			// Still refresh so the panel returns to "Not in a raid" - the periodic refresh only
+			// runs while in a raid, so leaving a non-counting raid would otherwise stick.
+			refreshPanel();
 		}
 	}
 

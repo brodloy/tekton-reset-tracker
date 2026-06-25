@@ -1,8 +1,12 @@
+<div align="center">
+
 ![Tekton Reset Tracker](banner.png)
 
 **Count how many Chambers of Xeric Challenge Mode raids you reset at Tekton, and the time you waste doing it.**
 
 [![RuneLite](https://img.shields.io/badge/RuneLite-Plugin-ea580c)](https://runelite.net/) [![Java](https://img.shields.io/badge/Java-11-007396?logo=openjdk&logoColor=white)](https://adoptium.net/temurin/releases/?version=11) [![License](https://img.shields.io/badge/License-BSD%202--Clause-blue.svg)](LICENSE) [![Game](https://img.shields.io/badge/Old%20School-RuneScape-5d0000)](https://oldschool.runescape.wiki/w/Tekton)
+
+</div>
 
 ---
 
